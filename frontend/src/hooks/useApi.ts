@@ -14,6 +14,7 @@ import {
   adminApi,
   userSettingsApi,
   healthApi,
+  userApi,
   type MarketSummary,
   type FileUploadResponse,
   type AnalysisResult,
@@ -122,6 +123,41 @@ export function useSavedArticles(limit: number = 50, skip: number = 0) {
     queryFn: () => articlesApi.getSaved(limit, skip),
     staleTime: 2 * 60 * 1000, // 2 minutes
     gcTime: 30 * 60 * 1000,
+  });
+}
+
+// ============ USER FAVORITES HOOKS ============
+export function useListFavorites() {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  return useQuery({
+    queryKey: ["user", "favorites"],
+    queryFn: () => userApi.listFavorites(),
+    enabled: !!token, // Only fetch if authenticated
+    staleTime: 2 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    retry: false, // Don't retry on auth errors
+  });
+}
+
+export function useAddFavorite() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (articleId: string) => userApi.addFavorite(articleId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["user", "favorites"] });
+      queryClient.invalidateQueries({ queryKey: ["articles", "saved"] });
+    },
+  });
+}
+
+export function useRemoveFavorite() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (articleId: string) => userApi.removeFavorite(articleId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["user", "favorites"] });
+      queryClient.invalidateQueries({ queryKey: ["articles", "saved"] });
+    },
   });
 }
 

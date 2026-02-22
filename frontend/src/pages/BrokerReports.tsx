@@ -6,7 +6,15 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
-import { useScrapeArticles, useSavedArticles } from "@/hooks/useApi";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
+	DialogFooter,
+} from "@/components/ui/dialog";
+import { useScrapeArticles, useSavedArticles, useListFavorites, useAddFavorite, useRemoveFavorite } from "@/hooks/useApi";
 import {
 	FileText,
 	Download,
@@ -24,6 +32,7 @@ import {
 	AlertCircle,
 	RefreshCw,
  	Loader2,
+    Heart,
 } from "lucide-react";
 
 const dataSourcesConfig = [
@@ -74,37 +83,6 @@ const dataSourcesConfig = [
 	},
 ];
 
-const synthesizedReports = [
-	{
-		id: 1,
-		title: "Apple Inc. Comprehensive Analysis: Q3 Earnings & Market Position",
-		sources: 4,
-		dateCreated: "2025-07-23",
-		status: "generated",
-		confidence: "high",
-		sentiment: "positive",
-		keyPoints: [
-			"Strong Q3 earnings with 15% services growth",
-			"China regulatory challenges for AI features",
-			"Positive analyst sentiment on iPhone 16 pre-orders",
-		],
-	},
-	{
-		id: 2,
-		title: "Tesla Inc. Market Dynamics: Production & Regulatory Updates",
-		sources: 3,
-		dateCreated: "2025-07-22",
-		status: "draft",
-		confidence: "medium",
-		sentiment: "neutral",
-		keyPoints: [
-			"Q3 production targets met ahead of schedule",
-			"FSD regulatory approval pending in Europe",
-			"Energy storage business showing strong growth",
-		],
-	},
-];
-
 type PreparedArticle = {
 	id: string;
 	title: string;
@@ -121,6 +99,7 @@ type PreparedArticle = {
 	tags: string[];
 	authors: string[];
 	wordCount: number;
+	dbId?: string | null;
 };
 
 const SOURCE_LOOKUP: Array<{ match: string; label: string; color: string }> = [
@@ -190,6 +169,7 @@ export default function BrokerReports() {
 	const [countInput, setCountInput] = useState("5");
 	const [maxArticlesInput, setMaxArticlesInput] = useState("60");
 	const [websiteInput, setWebsiteInput] = useState("");
+	const [selectedArticle, setSelectedArticle] = useState<PreparedArticle | null>(null);
 	const [scrapeParams, setScrapeParams] = useState({
 		count: 5,
 		maxArticles: 60,
@@ -198,6 +178,23 @@ export default function BrokerReports() {
 
 	const savedArticlesQuery = useSavedArticles(200, 0);
 	const scrapeQuery = useScrapeArticles({ ...scrapeParams, enabled: false });
+
+	// Favorites (only available when authenticated)
+	const favoritesQuery = useListFavorites();
+	const favoritesData = favoritesQuery.data?.favorites ?? [];
+	const favoriteIds = new Set<string>(
+		(Array.isArray(favoritesData) ? favoritesData.map((f: any) => {
+			// The backend returns ArticleInDB objects in favorites list
+			// We need to extract the _id field and convert to string
+			const id = f._id || f.id;
+			return typeof id === 'object' && id !== null ? String(id) : String(id || "");
+		}).filter(Boolean) : [])
+	);
+	const addFavoriteMutation = useAddFavorite();
+	const removeFavoriteMutation = useRemoveFavorite();
+	
+	// Check if user is authenticated
+	const isAuthenticated = typeof window !== 'undefined' && !!localStorage.getItem('auth_token');
 	const { data: savedData, isLoading: savedLoading, isPending: savedPending, isFetching: savedFetching, isError: savedError, error: savedErrorObj, refetch: refetchSaved } = savedArticlesQuery;
 	const { data: scrapeData, isLoading: scrapeLoading, isPending: scrapePending, isFetching: scrapeFetching, isError: scrapeError, error: scrapeErrorObj, refetch: refetchScrape } = scrapeQuery;
 
@@ -248,9 +245,14 @@ export default function BrokerReports() {
 				tags: tags.length ? `${tags.length} tags` : "No tags",
 			};
 
+			// Extract and normalize the database ID
+			const rawId = article._id || article.id;
+			const dbId = rawId ? (typeof rawId === 'object' ? String(rawId) : String(rawId)) : undefined;
+
 			return {
 				id: article.link || `article-${index}`,
 				title: article.title || "Untitled",
+				dbId,
 				source,
 				company: source,
 				extractedAt: publishInfo.formatted,
@@ -602,35 +604,36 @@ export default function BrokerReports() {
 								No articles match the current filters. Adjust your query or scrape new sources.
 							</p>
 						) : (
-							<>
-								{preparedReports.map((report) => (
-									<div key={report.id} className="p-4 border rounded-lg space-y-3">
-										<div className="flex items-start justify-between">
-											<div className="flex-1">
-												<div className="flex items-center space-x-2 mb-1">
-													<a
-														href={report.url}
-														target="_blank"
-														rel="noopener noreferrer"
-														className="font-medium text-sm hover:underline"
-													>
-															{report.title}
-														</a>
-													<ExternalLink className="h-3 w-3 text-muted-foreground" />
-												</div>
-												<div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-													<span>{report.source}</span>
-													<span>•</span>
-													<span>{report.extractedAt}</span>
-													{report.company ? (
-														<>
-															<span>•</span>
-															<span>{report.company}</span>
-														</>
-													) : null}
+						<>
+							{preparedReports.map((report) => {
+								const meta = getSourceMeta(report.source);
+								return (
+									<div
+										key={report.id}
+										className="group p-5 border rounded-lg space-y-3 hover:shadow-md hover:border-primary/50 transition-all cursor-pointer bg-card"
+										onClick={() => setSelectedArticle(report)}
+									>
+										<div className="flex items-start justify-between gap-4">
+											<div className="flex-1 min-w-0">
+												<h3 className="font-semibold text-base mb-2 line-clamp-2 group-hover:text-primary transition-colors">
+													{report.title}
+												</h3>
+												<div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground mb-2">
+													<Badge variant="outline" className="text-xs">
+														<div className={`w-2 h-2 rounded-full ${meta.color} mr-1.5`} />
+														{report.source}
+													</Badge>
+													<span className="flex items-center gap-1">
+														<Clock className="h-3 w-3" />
+														{report.extractedAt}
+													</span>
+													<span className="flex items-center gap-1">
+														<FileText className="h-3 w-3" />
+														{report.wordCount} words
+													</span>
 												</div>
 											</div>
-											<div className="flex items-center space-x-2">
+											<div className="flex flex-col items-end gap-2">
 												<Badge
 													variant={
 														report.sentiment === "positive"
@@ -639,6 +642,7 @@ export default function BrokerReports() {
 														? "destructive"
 														: "secondary"
 													}
+													className="text-xs"
 												>
 													{report.sentiment === "positive" && (
 														<TrendingUp className="h-3 w-3 mr-1" />
@@ -651,41 +655,120 @@ export default function BrokerReports() {
 													)}
 													{report.sentiment}
 												</Badge>
-												<Badge variant="outline">{report.status}</Badge>
+												<Badge variant="outline" className="text-xs">{report.status}</Badge>
 											</div>
 										</div>
 
-										<p className="text-sm text-muted-foreground leading-relaxed">
+										<p className="text-sm text-muted-foreground leading-relaxed line-clamp-3">
 											{report.summary}
 										</p>
 
-										<div className="grid gap-2 md:grid-cols-3">
-											{Object.entries(report.keyMetrics).map(([key, value]) => (
-												<div key={key} className="text-center p-2 bg-muted/20 rounded">
-													<p className="text-xs text-muted-foreground capitalize">
-														{key}
-													</p>
-													<p className="font-medium text-sm">{value}</p>
-												</div>
-											))}
+										{report.keywords.length > 0 && (
+											<div className="flex flex-wrap gap-1.5">
+												{report.keywords.slice(0, 6).map((keyword, idx) => (
+													<Badge key={idx} variant="secondary" className="text-xs px-2 py-0">
+														{keyword}
+													</Badge>
+												))}
+												{report.keywords.length > 6 && (
+													<Badge variant="secondary" className="text-xs px-2 py-0">
+														+{report.keywords.length - 6} more
+													</Badge>
+												)}
+											</div>
+										)}
+
+										<div className="flex items-center justify-between pt-2 border-t">
+											<div className="flex items-center gap-3 text-xs text-muted-foreground">
+												{report.authors.length > 0 && (
+													<span className="flex items-center gap-1">
+														<span className="font-medium">By:</span>
+														{report.authors.slice(0, 2).join(", ")}
+														{report.authors.length > 2 && ` +${report.authors.length - 2}`}
+													</span>
+												)}
+											</div>
+											<div className="flex items-center gap-2">
+												<Button
+													variant="ghost"
+													size="sm"
+													className="text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+													onClick={(e) => {
+														e.stopPropagation();
+														setSelectedArticle(report);
+													}}
+												>
+													Read Full Article
+													<ExternalLink className="h-3 w-3 ml-1" />
+												</Button>
+
+												<Button
+													variant={favoriteIds.has(report.dbId || "") ? "destructive" : "ghost"}
+													size="sm"
+													className="text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+													disabled={!report.dbId || !isAuthenticated}
+													title={!isAuthenticated ? "Sign in to favorite articles" : !report.dbId ? "Article must be saved first" : ""}
+													onClick={async (e) => {
+														e.stopPropagation();
+														if (!report.dbId) return;
+														try {
+															if (favoriteIds.has(report.dbId)) {
+																await removeFavoriteMutation.mutateAsync(report.dbId);
+															} else {
+																await addFavoriteMutation.mutateAsync(report.dbId);
+															}
+														} catch (err) {
+															console.error("toggle favorite failed", err);
+														}
+													}}
+												>
+													<Heart className="h-4 w-4 mr-1" />
+													{favoriteIds.has(report.dbId || "") ? "Favorited" : "Favorite"}
+												</Button>
+											</div>
 										</div>
 									</div>
-								))}
-
-								<div className="flex flex-wrap items-center justify-between gap-2 border-t pt-4 text-xs text-muted-foreground">
+								);
+							})}								<div className="flex flex-wrap items-center justify-between gap-2 border-t pt-4 text-xs text-muted-foreground">
 									<span>
 										Showing {filteredCount} of {totalArticles} scraped article
 										{totalArticles === 1 ? "" : "s"}.
 									</span>
-									<Button
+									<div className="flex items-center gap-2">
+										<Button
 										size="sm"
 										variant="secondary"
 										className="bg-accent text-accent-foreground"
 										disabled={preparedReports.length === 0}
-									>
-										<FileText className="h-4 w-4 mr-1" />
-										Synthesize All Reports
-									</Button>
+										>
+											<FileText className="h-4 w-4 mr-1" />
+											Synthesize All Reports
+										</Button>
+
+										<Button
+											size="sm"
+											variant="outline"
+											onClick={async () => {
+												const toFavorite = preparedReports
+													.map((r) => r.dbId)
+													.filter(Boolean) as string[];
+												for (const id of toFavorite) {
+													if (!favoriteIds.has(id)) {
+														try {
+															await addFavoriteMutation.mutateAsync(id);
+														} catch (err) {
+															console.error("favorite all failed", err);
+														}
+													}
+												}
+											}}
+											disabled={preparedReports.length === 0 || !isAuthenticated}
+											title={!isAuthenticated ? "Sign in to favorite articles" : ""}
+										>
+											<FileText className="h-4 w-4 mr-1" />
+											Favorite All
+										</Button>
+									</div>
 								</div>
 							</>
 						)}
@@ -693,60 +776,6 @@ export default function BrokerReports() {
 				</CardContent>
 			</Card>
 
-			{/* Synthesized Reports */}
-			<Card>
-				<CardHeader>
-					<CardTitle>Synthesized Reports</CardTitle>
-				</CardHeader>
-				<CardContent>
-					<div className="space-y-4">
-						{synthesizedReports.map((report) => (
-							<div
-								key={report.id}
-								className="flex items-center justify-between p-4 border rounded-lg"
-							>
-								<div className="flex items-center space-x-4">
-									<FileText className="h-8 w-8 text-primary" />
-									<div>
-										<h3 className="font-medium">{report.title}</h3>
-										<div className="flex items-center space-x-4 text-sm text-muted-foreground">
-											<span>{report.sources} sources</span>
-											<span>•</span>
-											<span>{report.dateCreated}</span>
-											<span>•</span>
-											<span>{report.confidence} confidence</span>
-										</div>
-										<div className="mt-1">
-											{report.keyPoints.slice(0, 2).map((point, idx) => (
-												<p key={idx} className="text-xs text-muted-foreground">
-													• {point}
-												</p>
-											))}
-										</div>
-									</div>
-								</div>
-								<div className="flex items-center space-x-4">
-									{report.status === "generated" ? (
-										<Badge className="bg-success text-success-foreground">
-											<CheckCircle className="h-3 w-3 mr-1" />
-											Generated
-										</Badge>
-									) : (
-										<Badge variant="secondary">
-											<Clock className="h-3 w-3 mr-1" />
-											Draft
-										</Badge>
-									)}
-									<Button variant="outline" size="sm">
-										<Edit className="h-4 w-4 mr-1" />
-										View
-									</Button>
-								</div>
-							</div>
-						))}
-					</div>
-				</CardContent>
-			</Card>
 
 			{/* Sample Synthesized Report View */}
 			<Card>
@@ -994,6 +1023,137 @@ export default function BrokerReports() {
 					</Tabs>
 				</CardContent>
 			</Card>
+
+			{/* Article Detail Modal */}
+			<Dialog open={!!selectedArticle} onOpenChange={(open) => !open && setSelectedArticle(null)}>
+				<DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+					{selectedArticle && (
+						<>
+							<DialogHeader>
+								<DialogTitle className="text-xl pr-8">{selectedArticle.title}</DialogTitle>
+								<DialogDescription className="space-y-3 pt-2">
+									<div className="flex flex-wrap items-center gap-3 text-sm">
+										<Badge variant="outline">
+											<div className={`w-2 h-2 rounded-full ${getSourceMeta(selectedArticle.source).color} mr-1.5`} />
+											{selectedArticle.source}
+										</Badge>
+										<span className="flex items-center gap-1.5 text-muted-foreground">
+											<Clock className="h-3.5 w-3.5" />
+											{selectedArticle.extractedAt}
+										</span>
+										<Badge
+											variant={
+												selectedArticle.sentiment === "positive"
+													? "default"
+													: selectedArticle.sentiment === "negative"
+													? "destructive"
+													: "secondary"
+											}
+										>
+											{selectedArticle.sentiment === "positive" && <TrendingUp className="h-3 w-3 mr-1" />}
+											{selectedArticle.sentiment === "negative" && <TrendingDown className="h-3 w-3 mr-1" />}
+											{selectedArticle.sentiment === "neutral" && <Minus className="h-3 w-3 mr-1" />}
+											{selectedArticle.sentiment}
+										</Badge>
+										<span className="flex items-center gap-1.5 text-muted-foreground">
+											<FileText className="h-3.5 w-3.5" />
+											{selectedArticle.wordCount.toLocaleString()} words
+										</span>
+									</div>
+									{selectedArticle.authors.length > 0 && (
+										<div className="flex items-center gap-2 text-sm text-muted-foreground">
+											<span className="font-medium">Authors:</span>
+											<span>{selectedArticle.authors.join(", ")}</span>
+										</div>
+									)}
+								</DialogDescription>
+							</DialogHeader>
+
+							<div className="space-y-4 py-4">
+								{/* Keywords and Tags */}
+								{(selectedArticle.keywords.length > 0 || selectedArticle.tags.length > 0) && (
+									<div className="space-y-3">
+										{selectedArticle.keywords.length > 0 && (
+											<div>
+												<h4 className="text-sm font-medium mb-2">Keywords</h4>
+												<div className="flex flex-wrap gap-1.5">
+													{selectedArticle.keywords.map((keyword, idx) => (
+														<Badge key={idx} variant="secondary" className="text-xs">
+															{keyword}
+														</Badge>
+													))}
+												</div>
+											</div>
+										)}
+										{selectedArticle.tags.length > 0 && (
+											<div>
+												<h4 className="text-sm font-medium mb-2">Tags</h4>
+												<div className="flex flex-wrap gap-1.5">
+													{selectedArticle.tags.map((tag, idx) => (
+														<Badge key={idx} variant="outline" className="text-xs">
+															#{tag}
+														</Badge>
+													))}
+												</div>
+											</div>
+										)}
+									</div>
+								)}
+
+								{/* Full Article Content */}
+								<div className="prose prose-sm dark:prose-invert max-w-none">
+									<div className="p-4 bg-muted/30 rounded-lg border">
+										<p className="text-sm leading-relaxed whitespace-pre-wrap">
+											{filteredArticles.find((a) => 
+												(a.link || `article-${filteredArticles.indexOf(a)}`) === selectedArticle.id
+											)?.text || selectedArticle.summary}
+										</p>
+									</div>
+								</div>
+
+								{/* Article Stats */}
+								<div className="grid grid-cols-3 gap-3">
+									<div className="text-center p-3 bg-muted/20 rounded-lg">
+										<p className="text-xs text-muted-foreground">Word Count</p>
+										<p className="font-semibold text-lg">{selectedArticle.wordCount.toLocaleString()}</p>
+									</div>
+									<div className="text-center p-3 bg-muted/20 rounded-lg">
+										<p className="text-xs text-muted-foreground">Keywords</p>
+										<p className="font-semibold text-lg">{selectedArticle.keywords.length}</p>
+									</div>
+									<div className="text-center p-3 bg-muted/20 rounded-lg">
+										<p className="text-xs text-muted-foreground">Status</p>
+										<p className="font-semibold text-sm capitalize">{selectedArticle.status}</p>
+									</div>
+								</div>
+							</div>
+
+							<DialogFooter className="gap-2 sm:gap-0">
+								<Button
+									variant="outline"
+									onClick={() => setSelectedArticle(null)}
+								>
+									Close
+								</Button>
+								<Button
+									asChild
+									className="gap-2"
+								>
+									<a
+										href={selectedArticle.url}
+										target="_blank"
+										rel="noopener noreferrer"
+									>
+										<Globe className="h-4 w-4" />
+										View Original Article
+										<ExternalLink className="h-4 w-4" />
+									</a>
+								</Button>
+							</DialogFooter>
+						</>
+					)}
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 }
